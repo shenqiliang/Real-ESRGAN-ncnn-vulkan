@@ -20,6 +20,7 @@ cmake_minimum_required(VERSION 3.9)
 
 set(CMAKE_BUILD_TYPE Release)
 
+
 option(USE_SYSTEM_NCNN "build with system libncnn" OFF)
 option(USE_SYSTEM_WEBP "build with system libwebp" OFF)
 option(USE_STATIC_MOLTENVK "link moltenvk static library" OFF)
@@ -27,6 +28,7 @@ option(USE_STATIC_MOLTENVK "link moltenvk static library" OFF)
 find_package(Threads)
 find_package(OpenMP)
 find_package(Vulkan REQUIRED)
+
 
 find_program(GLSLANGVALIDATOR_EXECUTABLE NAMES glslangValidator PATHS $ENV{VULKAN_SDK}/bin NO_CMAKE_FIND_ROOT_PATH)
 message(STATUS "Found glslangValidator: ${GLSLANGVALIDATOR_EXECUTABLE}")
@@ -272,9 +274,10 @@ compile_shader(realesrgan_postproc.comp)
 compile_shader(realesrgan_preproc_tta.comp)
 compile_shader(realesrgan_postproc_tta.comp)
 
+
 add_custom_target(generate-spirv DEPENDS ${SHADER_SPV_HEX_FILES})
 
-add_executable(realesrgan-ncnn-vulkan main.cpp realesrgan.cpp)
+add_executable(realesrgan-ncnn-vulkan main.cpp realesrgan.cpp FFmpegCommon.cpp FFmpegMuxing.cpp FFmpegVideoDecoder.cpp FFmpegVideoEncoder.cpp)
 
 add_dependencies(realesrgan-ncnn-vulkan generate-spirv)
 
@@ -305,6 +308,45 @@ endif()
 if(OPENMP_FOUND)
     list(APPEND REALESRGAN_LINK_LIBRARIES ${OpenMP_CXX_LIBRARIES})
 endif()
+
+
+
+
+# FFmpeg
+if (CMAKE_SIZEOF_VOID_P MATCHES 8)
+	set( PROJECT_ARCH "x86_64" )
+else(CMAKE_SIZEOF_VOID_P MATCHES 8)
+	set( PROJECT_ARCH "x86" )
+endif(CMAKE_SIZEOF_VOID_P MATCHES 8)
+
+
+set(FFmpeg_ROOT E:/Real-ESRGAN-ncnn-vulkan/src/ffmpeg)
+
+target_link_directories(realesrgan-ncnn-vulkan PUBLIC ${FFmpeg_ROOT}/lib)
+
+file(GLOB FFmpeg_Dlls RELATIVE ${FFmpeg_ROOT}/bin *.dll)
+
+foreach (Dll ${FFmpeg_Dlls})
+    add_custom_command(TARGET realesrgan-ncnn-vulkan POST_BUILD  
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
+            "${FFmpeg_ROOT}/bin/${Dll}"    
+            $<TARGET_FILE_DIR:realesrgan-ncnn-vulkan>)
+
+endforeach()
+
+
+foreach (lib "avformat" "avcodec" "avutil" "swscale" "swresample")
+
+	target_link_libraries(${PROJECT_NAME} ${lib})
+
+	# Header file
+	find_path(${lib}_INCLUDE "lib${lib}/${lib}.h" PATHS ${FFmpeg_ROOT}/include)
+	if (NOT ${lib}_INCLUDE)
+		message(FATAL_ERROR "Could not find header file of library \"${lib}\"")
+	endif()
+	target_include_directories(${PROJECT_NAME} PRIVATE ${${lib}_INCLUDE})
+endforeach()
+
 
 target_link_libraries(realesrgan-ncnn-vulkan ${REALESRGAN_LINK_LIBRARIES} -static-libstdc++)
 
