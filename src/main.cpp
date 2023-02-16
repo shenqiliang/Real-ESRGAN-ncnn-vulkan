@@ -230,11 +230,10 @@ void* load(void* args)
 
     int index = 0;
     FMediaFrame media_frame;
-    while (VideoDecoder->DecodeMedia(media_frame) == 0)
+    while (VideoDecoder->DecodeMedia(media_frame) == 0 && media_frame.Time < 0.1)
     {
         if (media_frame.Type == FFrameType::Video)
         {
-            int w, h, c;
             unsigned char* pixeldata = media_frame.Buffer;
             if (pixeldata)
             {
@@ -566,7 +565,7 @@ int main(int argc, char** argv)
 
     if (jobs_proc.empty())
     {
-        jobs_proc.resize(use_gpu_count, 2);
+        jobs_proc.resize(use_gpu_count, 1);
     }
 
     if (tilesize.empty())
@@ -656,6 +655,7 @@ int main(int argc, char** argv)
                 ptp[i].realesrgan = realesrgan[i];
             }
 
+            
             std::vector<ncnn::Thread*> proc_threads(total_jobs_proc);
             {
                 int total_jobs_proc_id = 0;

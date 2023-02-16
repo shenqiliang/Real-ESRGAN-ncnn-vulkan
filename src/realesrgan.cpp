@@ -3,6 +3,7 @@
 #include "realesrgan.h"
 
 #include <algorithm>
+#include <chrono>
 #include <vector>
 
 static const uint32_t realesrgan_preproc_spv_data[] = {
@@ -45,14 +46,21 @@ static const uint32_t realesrgan_postproc_tta_int8s_spv_data[] = {
 
 RealESRGAN::RealESRGAN(int gpuid, bool _tta_mode)
 {
-    net.opt.use_vulkan_compute = true;
-    net.opt.use_fp16_packed = true;
-    net.opt.use_fp16_storage = true;
-    net.opt.use_fp16_arithmetic = false;
-    net.opt.use_int8_storage = true;
-    net.opt.use_int8_arithmetic = false;
+    if (!cpu_mode)
+    {
+        net.opt.use_vulkan_compute = true;
+        net.opt.use_fp16_packed = true;
+        net.opt.use_fp16_storage = true;
+        net.opt.use_fp16_arithmetic = false;
+        net.opt.use_int8_storage = true;
+        net.opt.use_int8_arithmetic = false;
 
-    net.set_vulkan_device(gpuid);
+        net.set_vulkan_device(gpuid);
+    }
+    else
+    {
+        net.opt.use_int8_storage = true;
+    }
 
     realesrgan_preproc = 0;
     realesrgan_postproc = 0;
@@ -60,24 +68,33 @@ RealESRGAN::RealESRGAN(int gpuid, bool _tta_mode)
     bicubic_3x = 0;
     bicubic_4x = 0;
     tta_mode = _tta_mode;
+
 }
 
 RealESRGAN::~RealESRGAN()
 {
-    // cleanup preprocess and postprocess pipeline
+    if (cpu_mode)
     {
-        delete realesrgan_preproc;
-        delete realesrgan_postproc;
+        
     }
+    else
+    {
+        // cleanup preprocess and postprocess pipeline
+        {
+            delete realesrgan_preproc;
+            delete realesrgan_postproc;
+        }
 
-    bicubic_2x->destroy_pipeline(net.opt);
-    delete bicubic_2x;
+        bicubic_2x->destroy_pipeline(net.opt);
+        delete bicubic_2x;
 
-    bicubic_3x->destroy_pipeline(net.opt);
-    delete bicubic_3x;
+        bicubic_3x->destroy_pipeline(net.opt);
+        delete bicubic_3x;
 
-    bicubic_4x->destroy_pipeline(net.opt);
-    delete bicubic_4x;
+        bicubic_4x->destroy_pipeline(net.opt);
+        delete bicubic_4x;
+
+    }
 }
 
 #if _WIN32
@@ -114,6 +131,10 @@ int RealESRGAN::load(const std::string& parampath, const std::string& modelpath)
     net.load_model(modelpath.c_str());
 #endif
 
+    if (cpu_mode)
+    {
+        return 0;
+    }
     // initialize preprocess and postprocess pipeline
     {
         std::vector<ncnn::vk_specialization_type> specializations(1);
@@ -206,6 +227,28 @@ int RealESRGAN::load(const std::string& parampath, const std::string& modelpath)
 
 int RealESRGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
 {
+    if (cpu_mode)
+    {
+        auto begin_time = std::chrono::system_clock::now();
+
+        ncnn::Extractor ex = net.create_extractor();
+
+        ncnn::Mat in = ncnn::Mat::from_pixels((const unsigned char*)inimage.data, ncnn::Mat::PIXEL_BGR2RGB, inimage.w, inimage.h);
+        ncnn::Mat out;
+
+        ex.input("data", in);
+
+        ex.extract("output", out);
+
+        out.to_pixels((unsigned char*)outimage.data, ncnn::Mat::PIXEL_RGB2BGR);
+
+        auto end_time = std::chrono::system_clock::now();
+        auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - begin_time);
+
+        fprintf(stderr, "Cpu ESR Cost: %lld\n", diff.count());
+
+        return 0;
+    }
     const unsigned char* pixeldata = (const unsigned char*)inimage.data;
     const int w = inimage.w;
     const int h = inimage.h;

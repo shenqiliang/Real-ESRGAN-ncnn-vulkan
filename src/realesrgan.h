@@ -38,6 +38,7 @@ private:
     ncnn::Layer* bicubic_3x;
     ncnn::Layer* bicubic_4x;
     bool tta_mode;
+    bool cpu_mode = true;
 };
 
 #endif // REALESRGAN_H
