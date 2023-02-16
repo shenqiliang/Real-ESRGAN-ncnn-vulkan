@@ -214,6 +214,8 @@ int RealESRGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
     const int TILE_SIZE_X = tilesize;
     const int TILE_SIZE_Y = tilesize;
 
+    const ncnn::VulkanDevice* vkdev = net.vulkan_device();
+
     ncnn::VkAllocator* blob_vkallocator = net.vulkan_device()->acquire_blob_allocator();
     ncnn::VkAllocator* staging_vkallocator = net.vulkan_device()->acquire_staging_allocator();
 

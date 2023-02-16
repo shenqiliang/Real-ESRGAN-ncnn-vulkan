@@ -6,15 +6,15 @@
 
 void LogPacket(const AVFormatContext* FormatCtx, const AVPacket* Pkt)
 {
-    AVRational* TimeBase = &FormatCtx->streams[Pkt->stream_index]->time_base;
-	AV_TS2STR(Pkt->pts);
-
-	
-    FFmpegLog("pts:%s pts_time:%s dts:%s dts_time:%s duration:%s duration_time:%s stream_index:%d\n",
-           AV_TS2STR(Pkt->pts), AV_TS2TIME_STR(Pkt->pts, TimeBase),
-           AV_TS2STR(Pkt->dts), AV_TS2TIME_STR(Pkt->dts, TimeBase),
-           AV_TS2STR(Pkt->duration), AV_TS2TIME_STR(Pkt->duration, TimeBase),
-           Pkt->stream_index);
+ //    AVRational* TimeBase = &FormatCtx->streams[Pkt->stream_index]->time_base;
+	// AV_TS2STR(Pkt->pts);
+ //
+	//
+ //    FFmpegLog("pts:%s pts_time:%s dts:%s dts_time:%s duration:%s duration_time:%s stream_index:%d\n",
+ //           AV_TS2STR(Pkt->pts), AV_TS2TIME_STR(Pkt->pts, TimeBase),
+ //           AV_TS2STR(Pkt->dts), AV_TS2TIME_STR(Pkt->dts, TimeBase),
+ //           AV_TS2STR(Pkt->duration), AV_TS2TIME_STR(Pkt->duration, TimeBase),
+ //           Pkt->stream_index);
 }
 
 int WriteFrame(AVFormatContext* FormatCtx, AVCodecContext* Codec, const AVStream* Stream, const AVFrame* Frame)
@@ -24,7 +24,7 @@ int WriteFrame(AVFormatContext* FormatCtx, AVCodecContext* Codec, const AVStream
 	if (Ret < 0) {
 		FFmpegLog("Error sending a frame to the encoder: %s\n",
 				AV_ERR2STR(Ret));
-		exit(1);
+		throw;
 	}
 
 	while (Ret >= 0) {
@@ -37,7 +37,7 @@ int WriteFrame(AVFormatContext* FormatCtx, AVCodecContext* Codec, const AVStream
 		}
 		if (Ret < 0) {
 			FFmpegLog("Error encoding a frame: %s\n", AV_ERR2STR(Ret));
-			exit(1);
+			throw;
 		}
 
 		/* rescale output packet timestamp values from codec to stream timebase */
@@ -50,7 +50,7 @@ int WriteFrame(AVFormatContext* FormatCtx, AVCodecContext* Codec, const AVStream
 		av_packet_unref(&Pkt);
 		if (Ret < 0) {
 			FFmpegLog("Error while writing output packet: %s\n", AV_ERR2STR(Ret));
-			exit(1);
+			throw;
 		}
 	}
 
@@ -67,7 +67,7 @@ int FlushFrames(AVFormatContext* FormatCtx, AVCodecContext* Codec, const AVStrea
 	if (Ret < 0) {
 		FFmpegLog("Error sending a frame to the encoder: %s\n",
 				AV_ERR2STR(Ret));
-		exit(1);
+		throw;
 	}
 
 	while (Ret >= 0) {
@@ -78,7 +78,7 @@ int FlushFrames(AVFormatContext* FormatCtx, AVCodecContext* Codec, const AVStrea
 		}
 		if (Ret < 0) {
 			FFmpegLog("Error encoding a frame: %s\n", AV_ERR2STR(Ret));
-			exit(1);
+			throw;
 		}
 
 		/* rescale output packet timestamp values from codec to stream timebase */
@@ -93,7 +93,7 @@ int FlushFrames(AVFormatContext* FormatCtx, AVCodecContext* Codec, const AVStrea
 		 * This would be different if one used av_write_frame(). */
 		if (Ret < 0) {
 			FFmpegLog("Error while writing output packet: %s\n", AV_ERR2STR(Ret));
-			exit(1);
+			throw;
 		}
 	}
 
@@ -136,8 +136,6 @@ void AddStream(FOutputStream* Ost, AVFormatContext* FormatCtx, AVCodec **Codec, 
 		else
 		{
 			FFmpegLog("[Encoder] fallback to use h264 soft decoder.");
-			AVCodec* H264 = avcodec_find_encoder(CodecId);
-			*Codec = H264;
 		}
 	
 	}
@@ -145,26 +143,26 @@ void AddStream(FOutputStream* Ost, AVFormatContext* FormatCtx, AVCodec **Codec, 
     if (!(*Codec)) {
         FFmpegLog("Could not find encoder for '%s'\n",
                 avcodec_get_name(CodecId));
-        exit(1);
+        throw;
     }
 	
     Ost->TmpPkt = av_packet_alloc();
     if (!Ost->TmpPkt) {
         FFmpegLog("Could not allocate AVPacket\n");
-        exit(1);
+        throw;
     }
 
     Ost->Stream = avformat_new_stream(FormatCtx, nullptr);
     if (!Ost->Stream) {
         FFmpegLog("Could not allocate stream\n");
-        exit(1);
+        throw;
     }
     Ost->Stream->id = FormatCtx->nb_streams-1;
 
     AVCodecContext* c = avcodec_alloc_context3(*Codec);
     if (!c) {
         FFmpegLog("Could not alloc an encoding context\n");
-        exit(1);
+        throw;
     }
 
     Ost->EncodeCtx = c;
@@ -238,6 +236,9 @@ void AddStream(FOutputStream* Ost, AVFormatContext* FormatCtx, AVCodec **Codec, 
     /* Some formats want stream headers to be separate. */
     if (FormatCtx->oformat->flags & AVFMT_GLOBALHEADER)
         c->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+	c->flags |= AV_CODEC_FLAG_LOW_DELAY;
+
 }
 
 
@@ -258,7 +259,7 @@ AVFrame* AllocPicture(const AVPixelFormat PixelFormat, const int Width, const in
 	const int Ret = av_frame_get_buffer(Picture, 0);
     if (Ret < 0) {
         FFmpegLog("Could not allocate frame data.\n");
-        exit(1);
+        throw;
     }
 
     return Picture;
@@ -276,14 +277,14 @@ void OpenVideo(const AVCodec* Codec, FOutputStream* Ost, const AVDictionary* Opt
     av_dict_free(&Opt);
     if (Ret < 0) {
         FFmpegLog("Could not open video codec: %s\n", AV_ERR2STR(Ret));
-        exit(1);
+        throw;
     }
 
     /* allocate and init a re-usable frame */
     Ost->Frame = AllocPicture(CodecContext->pix_fmt, CodecContext->width, CodecContext->height);
     if (!Ost->Frame) {
         FFmpegLog("Could not allocate video frame\n");
-        exit(1);
+        throw;
     }
 
     /* If the output format is not YUV420P, then a temporary YUV420P
@@ -294,7 +295,7 @@ void OpenVideo(const AVCodec* Codec, FOutputStream* Ost, const AVDictionary* Opt
         Ost->TmpFrame = AllocPicture(AV_PIX_FMT_YUV420P, CodecContext->width, CodecContext->height);
         if (!Ost->TmpFrame) {
             FFmpegLog("Could not allocate temporary picture\n");
-            exit(1);
+            throw;
         }
     }
 
@@ -302,7 +303,7 @@ void OpenVideo(const AVCodec* Codec, FOutputStream* Ost, const AVDictionary* Opt
     Ret = avcodec_parameters_from_context(Ost->Stream->codecpar, CodecContext);
     if (Ret < 0) {
         FFmpegLog("Could not copy the stream parameters\n");
-        exit(1);
+        throw;
     }
 }
 
@@ -317,7 +318,7 @@ AVFrame* AllocAudioFrame(
 
 	if (!Frame) {
 		FFmpegLog("Error allocating an audio frame\n");
-		exit(1);
+		throw;
 	}
 
 	Frame->format = SampleFormat;
@@ -329,7 +330,7 @@ AVFrame* AllocAudioFrame(
 		const int Ret = av_frame_get_buffer(Frame, 0);
 		if (Ret < 0) {
 			FFmpegLog("Error allocating an audio buffer\n");
-			exit(1);
+			throw;
 		}
 	}
 
@@ -349,7 +350,7 @@ void OpenAudio(const AVCodec* Codec, FOutputStream* Ost, const AVDictionary* Opt
     av_dict_free(&Opt);
     if (Ret < 0) {
         FFmpegLog("Could not open audio codec: %s\n", AV_ERR2STR(Ret));
-        exit(1);
+        throw;
     }
 	
     if (CodecContext->codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE)
@@ -360,12 +361,12 @@ void OpenAudio(const AVCodec* Codec, FOutputStream* Ost, const AVDictionary* Opt
 	if (CodecContext->channels != AUDIO_ENC_CHANNELS)
 	{
 		FFmpegLog("Not supported AUDIO_ENC_CHANNELS\n");
-		exit(1);
+		throw;
 	}
 	if (CodecContext->channel_layout != AUDIO_ENC_CHANNEL_LAYOUT)
 	{
 		FFmpegLog("Not supported AUDIO_ENC_CHANNEL_LAYOUT\n");
-		exit(1);
+		throw;
 	}
 
 
@@ -378,14 +379,14 @@ void OpenAudio(const AVCodec* Codec, FOutputStream* Ost, const AVDictionary* Opt
     Ret = avcodec_parameters_from_context(Ost->Stream->codecpar, CodecContext);
     if (Ret < 0) {
         FFmpegLog("Could not copy the stream parameters\n");
-        exit(1);
+        throw;
     }
 
     /* create resampler context */
     Ost->SwrCtx = swr_alloc();
     if (!Ost->SwrCtx) {
         FFmpegLog("Could not allocate resampler context\n");
-        exit(1);
+        throw;
     }
 
     /* set options */
@@ -399,7 +400,7 @@ void OpenAudio(const AVCodec* Codec, FOutputStream* Ost, const AVDictionary* Opt
     /* initialize the resampling context */
     if ((Ret = swr_init(Ost->SwrCtx)) < 0) {
         FFmpegLog("Failed to initialize the resampling context\n");
-        exit(1);
+        throw;
     }
 }
 
@@ -434,7 +435,7 @@ int WriteAudioFrame(AVFormatContext* FormatCtx, FOutputStream* Ost, const void* 
 		 */
 		int Ret = av_frame_make_writable(Ost->Frame);
 		if (Ret < 0)
-			exit(1);
+			throw;
 
 		/* convert to destination format */
 		Ret = swr_convert(Ost->SwrCtx,
@@ -442,7 +443,7 @@ int WriteAudioFrame(AVFormatContext* FormatCtx, FOutputStream* Ost, const void* 
 						  const_cast<const uint8_t**>(Frame->data), Frame->nb_samples);
 		if (Ret < 0) {
 			FFmpegLog("Error while converting\n");
-			exit(1);
+			throw;
 		}
 		Frame = Ost->Frame;
 
@@ -469,7 +470,7 @@ AVFrame* GetVideoFrame(FOutputStream* Ost, const char* Buffer, const int Width, 
     /* when we pass a frame to the encoder, it may keep a reference to it
      * internally; make sure we do not overwrite it here */
     if (av_frame_make_writable(Ost->Frame) < 0)
-        exit(1);
+        throw;
 
 	if (!Ost->SwsCtx) {
 		Ost->SwsCtx = sws_getContext(Width, Height,
@@ -480,7 +481,7 @@ AVFrame* GetVideoFrame(FOutputStream* Ost, const char* Buffer, const int Width, 
 		if (!Ost->SwsCtx) {
 			fprintf(stderr,
 					"Could not initialize the conversion context\n");
-			exit(1);
+			throw;
 		}
 	}
 	const int LineSize[2] = {3 * (Width), 0};

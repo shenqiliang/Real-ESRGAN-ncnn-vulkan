@@ -5,27 +5,27 @@
 #include <queue>
 #include <vector>
 #include <clocale>
+#include <codecvt>
 #include <filesystem>
+#include <thread>
+
+#include "FFmpegVideoDecoder.h"
+#include "FFmpegVideoEncoder.h"
+
 namespace fs = std::filesystem;
 
 
-#if _WIN32
-// image decoder and encoder with wic
-#include "wic_image.h"
-#else // _WIN32
-// image decoder and encoder with stb
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_NO_PSD
-#define STBI_NO_TGA
-#define STBI_NO_GIF
-#define STBI_NO_HDR
-#define STBI_NO_PIC
-#define STBI_NO_STDIO
-#include "stb_image.h"
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
-#endif // _WIN32
-#include "webp_image.h"
+std::string wstr2str(std::wstring string_to_convert)
+{
+
+    //setup converter
+    using convert_type = std::codecvt_utf8<wchar_t>;
+    std::wstring_convert<convert_type, wchar_t> converter;
+
+    //use converter (.to_bytes: wstr->str, .from_bytes: str->wstr)
+    std::string converted_str = converter.to_bytes( string_to_convert );
+    return converted_str;
+}
 
 #if _WIN32
 #include <wchar.h>
@@ -118,31 +118,42 @@ static void print_usage()
     fprintf(stderr, "  -v                   verbose output\n");
 }
 
+enum class TaskStatus
+{
+    None,
+    Decoded,
+    EsrDone,
+    Encoded
+};
+
 class Task
 {
 public:
-    int id;
-    int webp;
+    int id = 0;
 
-    path_t inpath;
-    path_t outpath;
+    double Time = 0;
 
+    TaskStatus status = TaskStatus::None;
+    
     ncnn::Mat inimage;
     ncnn::Mat outimage;
 };
 
+template <typename T>
 class TaskQueue
 {
 public:
-    TaskQueue()
+    const int cap;
+    
+    TaskQueue(const int cap): cap(cap)
     {
     }
 
-    void put(const Task& v)
+    void put(const T& v)
     {
         lock.lock();
 
-        while (tasks.size() >= 8) // FIXME hardcode queue length
+        while (tasks.size() >= cap) // FIXME hardcode queue length
         {
             condition.wait(lock);
         }
@@ -154,7 +165,7 @@ public:
         condition.signal();
     }
 
-    void get(Task& v)
+    void pop(T& v)
     {
         lock.lock();
 
@@ -171,138 +182,85 @@ public:
         condition.signal();
     }
 
+    int pop_no_block(T& v)
+    {
+        int ret = 0;
+        lock.lock();
+
+        if (tasks.size() == 0)
+        {
+            ret = -1;
+        }
+        else
+        {
+            v = tasks.front();
+            tasks.pop();
+            ret = 1;
+        }
+
+
+        lock.unlock();
+        
+        return ret;
+    }
+
+
 private:
     ncnn::Mutex lock;
     ncnn::ConditionVariable condition;
-    std::queue<Task> tasks;
+    std::queue<T> tasks;
 };
 
-TaskQueue toproc;
-TaskQueue tosave;
+TaskQueue<std::shared_ptr<Task>> toproc(20);
+TaskQueue<std::shared_ptr<Task>> tosave(40);
+TaskQueue<FMediaFrame> audioqueue(INT32_MAX);
+FFmpegVideoDecoder *VideoDecoder;
+
 
 class LoadThreadParams
 {
 public:
     int scale;
-    int jobs_load;
-
-    // session data
-    std::vector<path_t> input_files;
-    std::vector<path_t> output_files;
 };
 
 void* load(void* args)
 {
     const LoadThreadParams* ltp = (const LoadThreadParams*)args;
-    const int count = ltp->input_files.size();
     const int scale = ltp->scale;
 
-    #pragma omp parallel for schedule(static,1) num_threads(ltp->jobs_load)
-    for (int i=0; i<count; i++)
+    int index = 0;
+    FMediaFrame media_frame;
+    while (VideoDecoder->DecodeMedia(media_frame) == 0)
     {
-        const path_t& imagepath = ltp->input_files[i];
-
-        int webp = 0;
-
-        unsigned char* pixeldata = 0;
-        int w;
-        int h;
-        int c;
-
-#if _WIN32
-        FILE* fp = _wfopen(imagepath.c_str(), L"rb");
-#else
-        FILE* fp = fopen(imagepath.c_str(), "rb");
-#endif
-        if (fp)
+        if (media_frame.Type == FFrameType::Video)
         {
-            // read whole file
-            unsigned char* filedata = 0;
-            int length = 0;
+            int w, h, c;
+            unsigned char* pixeldata = media_frame.Buffer;
+            if (pixeldata)
             {
-                fseek(fp, 0, SEEK_END);
-                length = ftell(fp);
-                rewind(fp);
-                filedata = (unsigned char*)malloc(length);
-                if (filedata)
-                {
-                    fread(filedata, 1, length, fp);
-                }
-                fclose(fp);
-            }
+                auto v = std::make_shared<Task>();
+                v->id = index++;
+                v->Time = media_frame.Time;
 
-            if (filedata)
-            {
-                pixeldata = webp_load(filedata, length, &w, &h, &c);
-                if (pixeldata)
-                {
-                    webp = 1;
-                }
-                else
-                {
-                    // not webp, try jpg png etc.
-#if _WIN32
-                    pixeldata = wic_decode_image(imagepath.c_str(), &w, &h, &c);
-#else // _WIN32
-                    pixeldata = stbi_load_from_memory(filedata, length, &w, &h, &c, 0);
-                    if (pixeldata)
-                    {
-                        // stb_image auto channel
-                        if (c == 1)
-                        {
-                            // grayscale -> rgb
-                            stbi_image_free(pixeldata);
-                            pixeldata = stbi_load_from_memory(filedata, length, &w, &h, &c, 3);
-                            c = 3;
-                        }
-                        else if (c == 2)
-                        {
-                            // grayscale + alpha -> rgba
-                            stbi_image_free(pixeldata);
-                            pixeldata = stbi_load_from_memory(filedata, length, &w, &h, &c, 4);
-                            c = 4;
-                        }
-                    }
-#endif // _WIN32
-                }
+                fprintf(stderr, "decode video time: %f\n", v->Time);
 
-                free(filedata);
+                v->inimage = ncnn::Mat(media_frame.Width, media_frame.Height, (void*)pixeldata, (size_t)3, 3);
+                v->inimage.addref();
+                v->outimage = ncnn::Mat(media_frame.Width * scale, media_frame.Height * scale, (size_t)3, 3);
+
+                v->status = TaskStatus::Decoded;
+                
+                toproc.put(v);
+                tosave.put(v);
+
             }
         }
-        if (pixeldata)
+        else if (media_frame.Type == FFrameType::Audio)
         {
-            Task v;
-            v.id = i;
-            v.inpath = imagepath;
-            v.outpath = ltp->output_files[i];
-
-            v.inimage = ncnn::Mat(w, h, (void*)pixeldata, (size_t)c, c);
-            v.outimage = ncnn::Mat(w * scale, h * scale, (size_t)c, c);
-
-            path_t ext = get_file_extension(v.outpath);
-            if (c == 4 && (ext == PATHSTR("jpg") || ext == PATHSTR("JPG") || ext == PATHSTR("jpeg") || ext == PATHSTR("JPEG")))
-            {
-                path_t output_filename2 = ltp->output_files[i] + PATHSTR(".png");
-                v.outpath = output_filename2;
-#if _WIN32
-                fwprintf(stderr, L"image %ls has alpha channel ! %ls will output %ls\n", imagepath.c_str(), imagepath.c_str(), output_filename2.c_str());
-#else // _WIN32
-                fprintf(stderr, "image %s has alpha channel ! %s will output %s\n", imagepath.c_str(), imagepath.c_str(), output_filename2.c_str());
-#endif // _WIN32
-            }
-
-            toproc.put(v);
-        }
-        else
-        {
-#if _WIN32
-            fwprintf(stderr, L"decode image %ls failed\n", imagepath.c_str());
-#else // _WIN32
-            fprintf(stderr, "decode image %s failed\n", imagepath.c_str());
-#endif // _WIN32
+            audioqueue.put(media_frame);
         }
     }
-
+    
     return 0;
 }
 
@@ -319,17 +277,23 @@ void* proc(void* args)
 
     for (;;)
     {
-        Task v;
+        std::shared_ptr<Task> v;
 
-        toproc.get(v);
+        toproc.pop(v);
 
-        if (v.id == -233)
+        if (v->id == -233)
             break;
 
-        realesrgan->process(v.inimage, v.outimage);
-
-        tosave.put(v);
+        realesrgan->process(v->inimage, v->outimage);
+        void *buffer = v->inimage.data;
+        v->inimage.release();
+        if (buffer != nullptr)
+        {
+            free(buffer);
+        }
+        v->status = TaskStatus::EsrDone;
     }
+
 
     return 0;
 }
@@ -338,6 +302,11 @@ class SaveThreadParams
 {
 public:
     int verbose;
+
+    int width;
+    int height;
+    
+    std::string save_path;
 };
 
 void* save(void* args)
@@ -345,84 +314,38 @@ void* save(void* args)
     const SaveThreadParams* stp = (const SaveThreadParams*)args;
     const int verbose = stp->verbose;
 
+    FFmpegVideoEncoder encoder(stp->width, stp->height, stp->save_path);
+
     for (;;)
     {
-        Task v;
+        std::shared_ptr<Task> v;
 
-        tosave.get(v);
+        tosave.pop(v);
 
-        if (v.id == -233)
+        if (v->id == -233)
             break;
 
-        // free input pixel data
+        while (v->status != TaskStatus::EsrDone)
         {
-            unsigned char* pixeldata = (unsigned char*)v.inimage.data;
-            if (v.webp == 1)
+            encoder.Flush();
+            if (v->status != TaskStatus::EsrDone)
             {
-                free(pixeldata);
-            }
-            else
-            {
-#if _WIN32
-                free(pixeldata);
-#else
-                stbi_image_free(pixeldata);
-#endif
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         }
-
-        int success = 0;
-
-        path_t ext = get_file_extension(v.outpath);
-
-        /* ----------- Create folder if not exists -------------------*/
-        fs::path fs_path = fs::absolute(v.outpath);
-        std::string parent_path = fs_path.parent_path().string();
-        if (fs::exists(parent_path) != 1){
-            std::cout << "Create folder: [" << parent_path << "]." << std::endl;
-            fs::create_directories(parent_path);
+        
+        FMediaFrame audio_frame;
+        while (audioqueue.pop_no_block(audio_frame) > 0)
+        {
+            encoder.AddAudioBuffer(audio_frame.Buffer, audio_frame.Size);
         }
 
-        if (ext == PATHSTR("webp") || ext == PATHSTR("WEBP"))
-        {
-            success = webp_save(v.outpath.c_str(), v.outimage.w, v.outimage.h, v.outimage.elempack, (const unsigned char*)v.outimage.data);
-        }
-        else if (ext == PATHSTR("png") || ext == PATHSTR("PNG"))
-        {
-#if _WIN32
-            success = wic_encode_image(v.outpath.c_str(), v.outimage.w, v.outimage.h, v.outimage.elempack, v.outimage.data);
-#else
-            success = stbi_write_png(v.outpath.c_str(), v.outimage.w, v.outimage.h, v.outimage.elempack, v.outimage.data, 0);
-#endif
-        }
-        else if (ext == PATHSTR("jpg") || ext == PATHSTR("JPG") || ext == PATHSTR("jpeg") || ext == PATHSTR("JPEG"))
-        {
-#if _WIN32
-            success = wic_encode_jpeg_image(v.outpath.c_str(), v.outimage.w, v.outimage.h, v.outimage.elempack, v.outimage.data);
-#else
-            success = stbi_write_jpg(v.outpath.c_str(), v.outimage.w, v.outimage.h, v.outimage.elempack, v.outimage.data, 100);
-#endif
-        }
-        if (success)
-        {
-            if (verbose)
-            {
-#if _WIN32
-                fwprintf(stderr, L"%ls -> %ls done\n", v.inpath.c_str(), v.outpath.c_str());
-#else
-                fprintf(stderr, "%s -> %s done\n", v.inpath.c_str(), v.outpath.c_str());
-#endif
-            }
-        }
-        else
-        {
-#if _WIN32
-            fwprintf(stderr, L"encode image %ls failed\n", v.outpath.c_str());
-#else
-            fprintf(stderr, "encode image %s failed\n", v.outpath.c_str());
-#endif
-        }
+        encoder.AddVideoBuffer((const char*)v->outimage.data, stp->width, stp->height, v->Time);
+        v->outimage.release();
+
     }
+
+    encoder.EndEncoder();
 
     return 0;
 }
@@ -434,19 +357,17 @@ int wmain(int argc, wchar_t** argv)
 int main(int argc, char** argv)
 #endif
 {
+    auto begin_time = std::chrono::system_clock::now();
     path_t inputpath;
     path_t outputpath;
-    int scale = 4;
+    int scale = 2;
     std::vector<int> tilesize;
     path_t model = PATHSTR("models");
     path_t modelname = PATHSTR("realesr-animevideov3");
     std::vector<int> gpuid;
-    int jobs_load = 1;
     std::vector<int> jobs_proc;
-    int jobs_save = 2;
     int verbose = 0;
     int tta_mode = 0;
-    path_t format = PATHSTR("png");
 
 #if _WIN32
     setlocale(LC_ALL, "");
@@ -477,11 +398,7 @@ int main(int argc, char** argv)
             gpuid = parse_optarg_int_array(optarg);
             break;
         case L'j':
-            swscanf(optarg, L"%d:%*[^:]:%d", &jobs_load, &jobs_save);
             jobs_proc = parse_optarg_int_array(wcschr(optarg, L':') + 1);
-            break;
-        case L'f':
-            format = optarg;
             break;
         case L'v':
             verbose = 1;
@@ -564,11 +481,6 @@ int main(int argc, char** argv)
         }
     }
 
-    if (jobs_load < 1 || jobs_save < 1)
-    {
-        fprintf(stderr, "invalid thread count argument\n");
-        return -1;
-    }
 
     if (jobs_proc.size() != (gpuid.empty() ? 1 : gpuid.size()) && !jobs_proc.empty())
     {
@@ -585,91 +497,6 @@ int main(int argc, char** argv)
         }
     }
 
-    if (!path_is_directory(outputpath))
-    {
-        // guess format from outputpath no matter what format argument specified
-        path_t ext = get_file_extension(outputpath);
-
-        if (ext == PATHSTR("png") || ext == PATHSTR("PNG"))
-        {
-            format = PATHSTR("png");
-        }
-        else if (ext == PATHSTR("webp") || ext == PATHSTR("WEBP"))
-        {
-            format = PATHSTR("webp");
-        }
-        else if (ext == PATHSTR("jpg") || ext == PATHSTR("JPG") || ext == PATHSTR("jpeg") || ext == PATHSTR("JPEG"))
-        {
-            format = PATHSTR("jpg");
-        }
-        else
-        {
-            fprintf(stderr, "invalid outputpath extension type\n");
-            return -1;
-        }
-    }
-
-    if (format != PATHSTR("png") && format != PATHSTR("webp") && format != PATHSTR("jpg"))
-    {
-        fprintf(stderr, "invalid format argument\n");
-        return -1;
-    }
-
-    // collect input and output filepath
-    std::vector<path_t> input_files;
-    std::vector<path_t> output_files;
-    {
-        if (path_is_directory(inputpath) && path_is_directory(outputpath))
-        {
-            std::vector<path_t> filenames;
-            int lr = list_directory(inputpath, filenames);
-            if (lr != 0)
-                return -1;
-
-            const int count = filenames.size();
-            input_files.resize(count);
-            output_files.resize(count);
-
-            path_t last_filename;
-            path_t last_filename_noext;
-            for (int i=0; i<count; i++)
-            {
-                path_t filename = filenames[i];
-                path_t filename_noext = get_file_name_without_extension(filename);
-                path_t output_filename = filename_noext + PATHSTR('.') + format;
-
-                // filename list is sorted, check if output image path conflicts
-                if (filename_noext == last_filename_noext)
-                {
-                    path_t output_filename2 = filename + PATHSTR('.') + format;
-#if _WIN32
-                    fwprintf(stderr, L"both %ls and %ls output %ls ! %ls will output %ls\n", filename.c_str(), last_filename.c_str(), output_filename.c_str(), filename.c_str(), output_filename2.c_str());
-#else
-                    fprintf(stderr, "both %s and %s output %s ! %s will output %s\n", filename.c_str(), last_filename.c_str(), output_filename.c_str(), filename.c_str(), output_filename2.c_str());
-#endif
-                    output_filename = output_filename2;
-                }
-                else
-                {
-                    last_filename = filename;
-                    last_filename_noext = filename_noext;
-                }
-
-                input_files[i] = inputpath + PATHSTR('/') + filename;
-                output_files[i] = outputpath + PATHSTR('/') + output_filename;
-            }
-        }
-        else if (!path_is_directory(inputpath) && !path_is_directory(outputpath))
-        {
-            input_files.push_back(inputpath);
-            output_files.push_back(outputpath);
-        }
-        else
-        {
-            fprintf(stderr, "inputpath and outputpath must be either file or directory at the same time\n");
-            return -1;
-        }
-    }
 
     int prepadding = 0;
 
@@ -700,8 +527,8 @@ int main(int argc, char** argv)
 
     if (modelname == PATHSTR("realesr-animevideov3"))
     {
-        swprintf(parampath, 256, L"%s/%s-x%s.param", model.c_str(), modelname.c_str(), std::to_string(scale));
-        swprintf(modelpath, 256, L"%s/%s-x%s.bin", model.c_str(), modelname.c_str(), std::to_string(scale));
+        swprintf(parampath, 256, L"%s/%s-x%s.param", model.c_str(), modelname.c_str(), std::to_wstring(scale).c_str());
+        swprintf(modelpath, 256, L"%s/%s-x%s.bin", model.c_str(), modelname.c_str(), std::to_wstring(scale).c_str());
     }
     else{
         swprintf(parampath, 256, L"%s/%s.param", model.c_str(), modelname.c_str());
@@ -726,9 +553,9 @@ int main(int argc, char** argv)
     path_t paramfullpath = sanitize_filepath(parampath);
     path_t modelfullpath = sanitize_filepath(modelpath);
 
-#if _WIN32
-    CoInitializeEx(NULL, COINIT_MULTITHREADED);
-#endif
+// #if _WIN32
+//     CoInitializeEx(NULL, COINIT_MULTITHREADED);
+// #endif
 
     ncnn::create_gpu_instance();
 
@@ -750,8 +577,6 @@ int main(int argc, char** argv)
     }
 
     int cpu_count = std::max(1, ncnn::get_cpu_count());
-    jobs_load = std::min(jobs_load, cpu_count);
-    jobs_save = std::min(jobs_save, cpu_count);
 
     int gpu_count = ncnn::get_gpu_count();
     for (int i=0; i<use_gpu_count; i++)
@@ -783,7 +608,11 @@ int main(int argc, char** argv)
         // more fine-grained tilesize policy here
         if (model.find(PATHSTR("models")) != path_t::npos)
         {
-            if (heap_budget > 1900)
+            if (heap_budget > 8000)
+            {
+                tilesize[i] = 1920;
+            }
+            else if (heap_budget > 1900)
                 tilesize[i] = 200;
             else if (heap_budget > 550)
                 tilesize[i] = 100;
@@ -813,9 +642,12 @@ int main(int argc, char** argv)
             // load image
             LoadThreadParams ltp;
             ltp.scale = scale;
-            ltp.jobs_load = jobs_load;
-            ltp.input_files = input_files;
-            ltp.output_files = output_files;
+#if _WIN32
+            VideoDecoder = new FFmpegVideoDecoder(wstr2str(inputpath));
+#else
+            VideoDecoder = new FFmpegVideoDecoder(inputpath);
+#endif
+            
 
             ncnn::Thread load_thread(load, (void*)&ltp);
 
@@ -841,18 +673,22 @@ int main(int argc, char** argv)
             // save image
             SaveThreadParams stp;
             stp.verbose = verbose;
+            stp.width = VideoDecoder->GetWidth() * scale;
+            stp.height = VideoDecoder->GetHeight() * scale;
+#if _WIN32
+            stp.save_path = wstr2str(outputpath);
+#else
+            stp.save_path = outputpath;
+#endif
 
-            std::vector<ncnn::Thread*> save_threads(jobs_save);
-            for (int i=0; i<jobs_save; i++)
-            {
-                save_threads[i] = new ncnn::Thread(save, (void*)&stp);
-            }
+            ncnn::Thread *save_thread = new ncnn::Thread(save, (void*)&stp);
+
 
             // end
             load_thread.join();
 
-            Task end;
-            end.id = -233;
+            auto end = std::make_shared<Task>();
+            end->id = -233;
 
             for (int i=0; i<total_jobs_proc; i++)
             {
@@ -864,17 +700,10 @@ int main(int argc, char** argv)
                 proc_threads[i]->join();
                 delete proc_threads[i];
             }
-
-            for (int i=0; i<jobs_save; i++)
-            {
-                tosave.put(end);
-            }
-
-            for (int i=0; i<jobs_save; i++)
-            {
-                save_threads[i]->join();
-                delete save_threads[i];
-            }
+            tosave.put(end);
+            
+            save_thread->join();
+            delete save_thread;
         }
 
         for (int i=0; i<use_gpu_count; i++)
@@ -886,5 +715,9 @@ int main(int argc, char** argv)
 
     ncnn::destroy_gpu_instance();
 
+    auto end_time = std::chrono::system_clock::now();
+    auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - begin_time);
+
+    fprintf(stderr, "Convert Total Cost: %lld\n", diff.count());
     return 0;
 }

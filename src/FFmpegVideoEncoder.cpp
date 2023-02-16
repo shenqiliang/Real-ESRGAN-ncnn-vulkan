@@ -18,7 +18,7 @@ FFmpegVideoEncoder::FFmpegVideoEncoder(int Width, int Height, std::string FilePa
 		avformat_alloc_output_context2(&FormatContext, nullptr, "mpeg", FileName);
 	}
 	if (!FormatContext)
-		exit(1);
+		throw;
 
 	OutputFormat = FormatContext->oformat;
 
@@ -36,16 +36,9 @@ FFmpegVideoEncoder::FFmpegVideoEncoder(int Width, int Height, std::string FilePa
 		EncodeAudio = 1;
 	}
 
-	// set h265 crf param
-	// int Crf = 28;
-	// if (FParse::Value(FCommandLine::Get(), TEXT("crf="), Crf))
-	// {
-	// 	const FString CrfParam = FString::Printf(TEXT("%d"), Crf);
-	// 	av_dict_set(&Opt, "crf", TCHAR_TO_UTF8(*CrfParam), 0);
-	// 	UE_LOG(LogTemp, Warning, TEXT("crf: %s"), *CrfParam);
-	// }
 
-
+	av_dict_set(&Opt, "tune", "zerolatency", 0);
+	
 	/* Now that all the parameters are set, we can open the audio and
 	 * video codecs and allocate the necessary encode buffers. */
 	if (bHasVideo)
@@ -62,7 +55,7 @@ FFmpegVideoEncoder::FFmpegVideoEncoder(int Width, int Height, std::string FilePa
 		if (Ret < 0) {
 			FFmpegLog("Could not open '%s': %s\n", FileName,
 					AV_ERR2STR(Ret));
-			exit(1);
+			throw;
 		}
 	}
 
@@ -71,7 +64,7 @@ FFmpegVideoEncoder::FFmpegVideoEncoder(int Width, int Height, std::string FilePa
 	if (Ret < 0) {
 		FFmpegLog("Error occurred when opening output file: %s\n",
 		 		AV_ERR2STR(Ret));
-		exit(1);
+		throw;
 	}
 
 	if (AudioEncodeBuffer == nullptr)
@@ -85,6 +78,8 @@ FFmpegVideoEncoder::FFmpegVideoEncoder(int Width, int Height, std::string FilePa
 
 void FFmpegVideoEncoder::AddVideoBuffer(const char* Buffer, int Width, int Height, double Time)
 {
+
+	FFmpegLog("write video time: %f", Time);
 
 	if (EncodeVideo)
 	{
@@ -132,15 +127,20 @@ void FFmpegVideoEncoder::AddAudioBuffer(const void* Buffer, const size_t Size)
 	}
 }
 
+void FFmpegVideoEncoder::Flush()
+{
+}
+
 void FFmpegVideoEncoder::EndEncoder()
 {
 
 	free(AudioEncodeBuffer);
 	
 	UsedAudioBufferSize = 0;
-	
+
 	FlushOutputStream(FormatContext, &VideoStream);
-	
+	FlushOutputStream(FormatContext, &AudioStream);
+
 	av_write_trailer(FormatContext);
 
 	avio_flush(FormatContext->pb);

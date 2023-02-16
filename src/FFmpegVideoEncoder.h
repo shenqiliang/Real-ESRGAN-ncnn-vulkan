@@ -28,6 +28,8 @@ public:
 	 */
 	void AddAudioBuffer(const void* Buffer, const size_t Size);
 
+	void Flush();
+
 	// finish the encoding
 	void EndEncoder();
 

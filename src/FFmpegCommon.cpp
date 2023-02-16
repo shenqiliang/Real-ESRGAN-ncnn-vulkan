@@ -7,7 +7,8 @@ void FFmpegLog(const char* Format, ...)
 	char Buffer[1024] = {0};
 	vsnprintf(Buffer, 1024, Format, List);
 	va_end(List);
-	printf("[ffmpeg]%s", Buffer);
+	
+	fprintf(stderr, "[ffmpeg]%s\n", Buffer);
 }
 
 char* CopyCString(const char* CStr)

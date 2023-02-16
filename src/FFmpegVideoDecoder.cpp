@@ -21,7 +21,7 @@ int FFmpegVideoDecoder::OutputAudioFrame(const AVFrame* Frame)
 		SwrCtx = swr_alloc();
 		if (!SwrCtx) {
 			FFmpegLog("Could not allocate resampler context\n");
-			exit(1);
+			throw;
 		}
 
 		 swr_alloc_set_opts(SwrCtx, AUDIO_ENC_CHANNEL_LAYOUT, AUDIO_ENC_FORMAT, AUDIO_SAMPLE_RATE,
@@ -31,7 +31,7 @@ int FFmpegVideoDecoder::OutputAudioFrame(const AVFrame* Frame)
 		/* initialize the resampling context */
 		if ((ErrorCode = swr_init(SwrCtx)) < 0) {
 			FFmpegLog("Failed to initialize the resampling context\n");
-			exit(1);
+			throw;
 		}
 
 	}
