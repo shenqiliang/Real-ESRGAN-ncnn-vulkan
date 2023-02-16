@@ -211,7 +211,7 @@ private:
     std::queue<T> tasks;
 };
 
-TaskQueue<std::shared_ptr<Task>> toproc(20);
+TaskQueue<std::shared_ptr<Task>> toproc(8);
 TaskQueue<std::shared_ptr<Task>> tosave(40);
 TaskQueue<FMediaFrame> audioqueue(INT32_MAX);
 FFmpegVideoDecoder *VideoDecoder;
@@ -245,7 +245,6 @@ void* load(void* args)
                 fprintf(stderr, "decode video time: %f\n", v->Time);
 
                 v->inimage = ncnn::Mat(media_frame.Width, media_frame.Height, (void*)pixeldata, (size_t)3, 3);
-                v->inimage.addref();
                 v->outimage = ncnn::Mat(media_frame.Width * scale, media_frame.Height * scale, (size_t)3, 3);
 
                 v->status = TaskStatus::Decoded;
@@ -312,10 +311,9 @@ public:
 void* save(void* args)
 {
     const SaveThreadParams* stp = (const SaveThreadParams*)args;
-    const int verbose = stp->verbose;
 
     FFmpegVideoEncoder encoder(stp->width, stp->height, stp->save_path);
-
+    
     for (;;)
     {
         std::shared_ptr<Task> v;
@@ -339,8 +337,8 @@ void* save(void* args)
         {
             encoder.AddAudioBuffer(audio_frame.Buffer, audio_frame.Size);
         }
-
-        encoder.AddVideoBuffer((const char*)v->outimage.data, stp->width, stp->height, v->Time);
+        
+        encoder.AddVideoBuffer((const char*)v->outimage.data, v->outimage.w, v->outimage.h, v->Time);
         v->outimage.release();
 
     }
@@ -673,8 +671,8 @@ int main(int argc, char** argv)
             // save image
             SaveThreadParams stp;
             stp.verbose = verbose;
-            stp.width = VideoDecoder->GetWidth() * scale;
-            stp.height = VideoDecoder->GetHeight() * scale;
+            stp.width = VideoDecoder->GetWidth();
+            stp.height = VideoDecoder->GetHeight();
 #if _WIN32
             stp.save_path = wstr2str(outputpath);
 #else

@@ -486,7 +486,7 @@ AVFrame* GetVideoFrame(FOutputStream* Ost, const char* Buffer, const int Width, 
 	}
 	const int LineSize[2] = {3 * (Width), 0};
 	sws_scale(Ost->SwsCtx, reinterpret_cast<const uint8_t*const*>(&Buffer),
-			  LineSize, 0, CodecContext->height, Ost->Frame->data,
+			  LineSize, 0, Height, Ost->Frame->data,
 			  Ost->Frame->linesize);
 	if (Time >= 0.0)
 	{

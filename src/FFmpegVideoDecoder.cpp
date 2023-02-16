@@ -94,7 +94,7 @@ int FFmpegVideoDecoder::OutputVideoFrame(const AVFrame* Frame)
 	DestMediaFrame->Index = VideoFrameNum++;
 	DestMediaFrame->Width = VideoWidth;
 	DestMediaFrame->Height = VideoHeight;
-	DestMediaFrame->Buffer = static_cast<uint8*>(realloc(DestMediaFrame->Buffer, VideoWidth * VideoHeight * 3));
+	DestMediaFrame->Buffer = static_cast<uint8*>(malloc(VideoWidth * VideoHeight * 4));
 	DestMediaFrame->Size = VideoWidth * VideoHeight * 3;
 	Data[0] = (uint8_t *)DestMediaFrame->Buffer;
 	int Lines[AV_NUM_DATA_POINTERS] = {0};
