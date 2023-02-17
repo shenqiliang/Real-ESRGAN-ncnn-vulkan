@@ -43,16 +43,25 @@ static const uint32_t realesrgan_postproc_tta_int8s_spv_data[] = {
     #include "realesrgan_postproc_tta_int8s.spv.hex.h"
 };
 
-RealESRGAN::RealESRGAN(int gpuid, bool _tta_mode)
+RealESRGAN::RealESRGAN(int gpuid, bool _tta_mode, bool fp16)
 {
     net.opt.use_vulkan_compute = true;
     net.opt.use_fp16_packed = true;
     net.opt.use_fp16_storage = true;
-    net.opt.use_fp16_arithmetic = false;
+    net.opt.use_fp16_arithmetic = fp16;
     net.opt.use_int8_storage = true;
     net.opt.use_int8_arithmetic = false;
 
     net.set_vulkan_device(gpuid);
+
+    if (net.opt.use_fp16_arithmetic)
+    {
+        fprintf(stderr, "use_fp16_arithmetic enable\n");
+    }
+    else
+    {
+        fprintf(stderr, "use_fp16_arithmetic disable\n");
+    }
 
     realesrgan_preproc = 0;
     realesrgan_postproc = 0;

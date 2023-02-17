@@ -116,6 +116,7 @@ static void print_usage()
     fprintf(stderr, "  -x                   enable tta mode\n");
     fprintf(stderr, "  -f format            output image format (jpg/png/webp, default=ext/png)\n");
     fprintf(stderr, "  -v                   verbose output\n");
+    fprintf(stderr, "  -w                   fp16 gpu\n");
 }
 
 enum class TaskStatus
@@ -366,11 +367,12 @@ int main(int argc, char** argv)
     std::vector<int> jobs_proc;
     int verbose = 0;
     int tta_mode = 0;
+    bool enable_fp16 = false;
 
 #if _WIN32
     setlocale(LC_ALL, "");
     wchar_t opt;
-    while ((opt = getopt(argc, argv, L"i:o:s:t:m:n:g:j:f:vxh")) != (wchar_t)-1)
+    while ((opt = getopt(argc, argv, L"i:o:s:t:m:n:g:j:f:vxhw")) != (wchar_t)-1)
     {
         switch (opt)
         {
@@ -404,6 +406,9 @@ int main(int argc, char** argv)
         case L'x':
             tta_mode = 1;
             break;
+        case L'w':
+            enable_fp16 = true;
+            break;
         case L'h':
         default:
             print_usage();
@@ -412,7 +417,7 @@ int main(int argc, char** argv)
     }
 #else // _WIN32
     int opt;
-    while ((opt = getopt(argc, argv, "i:o:s:t:m:n:g:j:f:vxh")) != -1)
+    while ((opt = getopt(argc, argv, "i:o:s:t:m:n:g:j:f:vxhw")) != -1)
     {
         switch (opt)
         {
@@ -449,6 +454,9 @@ int main(int argc, char** argv)
             break;
         case 'x':
             tta_mode = 1;
+            break;
+        case 'w':
+            enable_fp16 = true;
             break;
         case 'h':
         default:
@@ -626,7 +634,7 @@ int main(int argc, char** argv)
 
         for (int i=0; i<use_gpu_count; i++)
         {
-            realesrgan[i] = new RealESRGAN(gpuid[i], tta_mode);
+            realesrgan[i] = new RealESRGAN(gpuid[i], tta_mode, enable_fp16);
 
             realesrgan[i]->load(paramfullpath, modelfullpath);
 
