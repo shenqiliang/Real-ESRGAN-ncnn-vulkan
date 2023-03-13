@@ -149,21 +149,22 @@ public:
     TaskQueue(const int cap): cap(cap)
     {
     }
-
+    
     void put(const T& v)
     {
         lock.lock();
 
         while (tasks.size() >= cap) // FIXME hardcode queue length
         {
-            condition.wait(lock);
+            condition_not_full.waitTime(lock, 3000);
         }
 
+        
         tasks.push(v);
 
         lock.unlock();
 
-        condition.signal();
+        condition_has_data.broadcast();
     }
 
     void pop(T& v)
@@ -172,7 +173,7 @@ public:
 
         while (tasks.size() == 0)
         {
-            condition.wait(lock);
+            condition_has_data.waitTime(lock, 3000);
         }
 
         v = tasks.front();
@@ -180,7 +181,7 @@ public:
 
         lock.unlock();
 
-        condition.signal();
+        condition_not_full.broadcast();
     }
 
     int pop_no_block(T& v)
@@ -208,7 +209,8 @@ public:
 
 private:
     ncnn::Mutex lock;
-    ncnn::ConditionVariable condition;
+    ncnn::ConditionVariable condition_has_data;
+    ncnn::ConditionVariable condition_not_full;
     std::queue<T> tasks;
 };
 
